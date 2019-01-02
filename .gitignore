@@ -1,0 +1,13 @@
+Debug
+appunti.txt
+*.ko
+*.o
+.mpu6050_driver.ko.cmd
+.mpu6050_driver.mod.o.cmd
+.mpu6050_driver.o.cmd
+.tmp_versions/
+*.symvers
+*.order
+*.ko
+*.mod.*
+
