@@ -21,7 +21,8 @@
 #include <linux/iio/kfifo_buf.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/iio/trigger_consumer.h>
-
+#include <linux/ktime.h>
+#include "pru_mylinuxdrone.h"
 /*
  * macro to print debug info easily
  */
@@ -31,6 +32,8 @@ struct mpu6050_state {
 	struct rpmsg_device *rpdev;
 	struct device *dev;
 	wait_queue_head_t wait_list;
+	ktime_t now;
+	ktime_t later;
 };
 
 /* mpu6050_channels - structure that holds information about the
@@ -44,8 +47,8 @@ static const struct iio_chan_spec mpu6050_channels[] = {
         .scan_index = 0,
         .scan_type = {
                 .sign = 's',
-                .realbits = 96,
-                .storagebits = 96,
+                .realbits = 160,
+                .storagebits = 160,
                 .shift = 0,
                 .endianness = IIO_LE,
         },
@@ -69,7 +72,8 @@ static int mpu6050_read_from_pru(struct iio_dev *indio_dev)
 {
 	int ret;
 	struct mpu6050_state *st;
-	unsigned char startMessage[3] = "ST";
+    unsigned char startMessage[sizeof(PrbMessageType)];
+    ((PrbMessageType*)startMessage)->message_type = MPU_ENABLE_MSG_TYPE;
 	log_debug("mpu6050_read_from_pru");
 
 	st = iio_priv(indio_dev);
@@ -79,7 +83,7 @@ static int mpu6050_read_from_pru(struct iio_dev *indio_dev)
 		return -EINVAL;
 	}
 
-	ret = rpmsg_send(st->rpdev->ept, (void *)startMessage, 3);
+	ret = rpmsg_send(st->rpdev->ept, (void *)startMessage, sizeof(PrbMessageType));
 	if (ret)
 		dev_err(st->dev, "Failed sending start message to PRUs\n");
 	return 0;
@@ -91,8 +95,9 @@ static int mpu6050_read_from_pru(struct iio_dev *indio_dev)
 static int mpu6050_stop_sampling_pru(struct iio_dev *indio_dev )
 {
 	int ret;
-	unsigned char stop_val[3] = "TS";
-	struct mpu6050_state *st;
+	unsigned char stop_val[sizeof(PrbMessageType)];
+    struct mpu6050_state *st;
+	((PrbMessageType*)stop_val)->message_type = MPU_DISABLE_MSG_TYPE;
 
 	st = iio_priv(indio_dev);
 
@@ -101,7 +106,7 @@ static int mpu6050_stop_sampling_pru(struct iio_dev *indio_dev )
 		return -EINVAL;
 	}
 
-	ret = rpmsg_send(st->rpdev->ept, (void *)stop_val, 3);
+	ret = rpmsg_send(st->rpdev->ept, (void *)stop_val, sizeof(PrbMessageType));
 	if (ret)
 		dev_err(st->dev, "failed to stop mpu6050 sampling\n");
 
@@ -117,9 +122,12 @@ static int mpu6050_buffer_postenable(struct iio_dev *indio_dev)
 	int ret;
 	struct mpu6050_state *st;
 
+    log_debug("postenable");
 	st = iio_priv(indio_dev);
+	st->now = ktime_get();
+	st->later = ktime_get();
 	ret = mpu6050_read_from_pru(indio_dev);
-	log_debug("postenable");
+    printk(KERN_INFO "mpu6050_driver postenable result [%d]\n", ret);
 	return ret;
 }
 
@@ -183,16 +191,29 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	struct mpu6050_state *st;
 	struct iio_dev *indio_dev;
 	u16 *dataw = data;
-	int count;
+	PrbMessageType* mpu6050DataStruct = (PrbMessageType*)data;
+
+	uint32_t usec;
 
 	indio_dev = dev_get_drvdata(&rpdev->dev);
 	st = iio_priv(indio_dev);
 
-	if(len == 14) {
-	      iio_push_to_buffers(indio_dev, dataw + 1); // accel
-//        for (count =0; count < (len -2)/2; count++) {
-//            iio_push_to_buffers(indio_dev, dataw + count + 1);
-//        }
+	if(len == sizeof(PrbMessageType)) {
+	      st->later = ktime_get();
+	      usec = ktime_us_delta(st->later, st->now);
+	      if(usec > 1500) {
+	          printk(KERN_INFO "mpu6050_driver time exceeds [%d]\n", usec);
+	          printk(KERN_INFO "a[%d,%d,%d], g[%d,%d,%d]\n",
+	                 mpu6050DataStruct->mpu_accel_gyro.ax,
+	                 mpu6050DataStruct->mpu_accel_gyro.ay,
+	                 mpu6050DataStruct->mpu_accel_gyro.az,
+	                 mpu6050DataStruct->mpu_accel_gyro.gx,
+	                 mpu6050DataStruct->mpu_accel_gyro.gy,
+	                 mpu6050DataStruct->mpu_accel_gyro.gz
+	                             );
+	      }
+	      iio_push_to_buffers(indio_dev, dataw); // accel
+          st->now = ktime_get();
 	} else {
 	    printk(KERN_INFO "mpu6050_driver message received [%s]\n", (char *)data);
 	}
@@ -241,13 +262,26 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 	indio_dev->channels = mpu6050_channels;
 	indio_dev->num_channels = ARRAY_SIZE(mpu6050_channels);
 	buffer = devm_iio_kfifo_allocate(&indio_dev->dev);
-	buffer->length = 1;
-	buffer->bytes_per_datum = 12;
+    if (!buffer) {
+        return -ENOMEM;
+    }
 
-	if (!buffer) {
-		return -ENOMEM;
+	ret = buffer->access->set_length(buffer, 8);
+    if(ret < 0) {
+        pr_err("Failed setting length of kfifo buffer\n");
+        return ret;
+    }
+    ret = buffer->access->set_bytes_per_datum(buffer, sizeof(PrbMessageType));
+	if(ret < 0) {
+        pr_err("Failed setting bytes_per_datum of kfifo buffer\n");
+        return ret;
 	}
 
+    ret = buffer->access->request_update(buffer);
+    if(ret < 0) {
+        pr_err("Failed update of kfifo buffer\n");
+        return ret;
+    }
 	iio_device_attach_buffer(indio_dev, buffer);
 
 	init_waitqueue_head(&st->wait_list);
@@ -279,7 +313,7 @@ static void mpu6050_driver_remove(struct rpmsg_device *rpdev)
 /* mpu6050_id - Structure that holds the channel name for which this driver
    should be probed */
 static const struct rpmsg_device_id mpu6050_id[] = {
-		{ .name = "mpu-6050" },
+		{ .name = "pru-mylinuxdrone" },
 		{ },
 };
 MODULE_DEVICE_TABLE(rpmsg, mpu6050_id);

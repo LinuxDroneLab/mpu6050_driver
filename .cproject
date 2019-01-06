@@ -31,6 +31,7 @@
 									<listOptionValue builtIn="false" value="/hd/linuxlab/bb-kernel/KERNEL/arch/arm/include/uapi"/>
 									<listOptionValue builtIn="false" value="/hd/linuxlab/bb-kernel/KERNEL/arch/arm/include/generated"/>
 									<listOptionValue builtIn="false" value="/hd/linuxlab/bb-kernel/KERNEL/arch/arm/include/generated/uapi"/>
+									<listOptionValue builtIn="false" value="/hd/eworkspace/pru-rpmsg-bridge/include"/>
 								</option>
 								<option id="gnu.c.compiler.option.preprocessor.def.symbols.32607826" name="Defined symbols (-D)" superClass="gnu.c.compiler.option.preprocessor.def.symbols" useByScannerDiscovery="false" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="__KERNEL__=1"/>
