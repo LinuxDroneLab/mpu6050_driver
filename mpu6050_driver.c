@@ -23,6 +23,12 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/ktime.h>
 #include "pru_mylinuxdrone.h"
+
+// TODO: convertire in attributi di configurazione
+#define SAMPLES_IN_FREQUENCY 1000
+#define SAMPLES_OUT_FREQUENCY 250
+#define GYRO_CALIBRATION_SAMPLES 10000
+
 /*
  * macro to print debug info easily
  */
@@ -34,6 +40,19 @@ struct mpu6050_state {
 	wait_queue_head_t wait_list;
 	ktime_t now;
 	ktime_t later;
+    int32_t sumCalibrationGyroSamples[3];
+    uint16_t autoCalibrationGyroCounter;
+    int16_t minCalibrationGyroRaw[3];
+    int16_t maxCalibrationGyroRaw[3];
+    int16_t deadbandGyro[3];
+    int8_t axisMatrixAccel[3];
+    int8_t axisMatrixGyro[3];
+    int16_t axisOffsetAccel[3];
+    int16_t axisOffsetGyro[3];
+    int16_t accelRaw[3];
+    int16_t gyroRaw[3];
+    int32_t sumGyroRaw[3];
+    uint8_t outCounter;
 };
 
 /* mpu6050_channels - structure that holds information about the
@@ -192,7 +211,9 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	struct iio_dev *indio_dev;
 	u16 *dataw = data;
 	PrbMessageType* mpu6050DataStruct = (PrbMessageType*)data;
-
+    uint8_t i = 0;
+    int32_t tmp;
+    int16_t rpy[3];
 	uint32_t usec;
 
 	indio_dev = dev_get_drvdata(&rpdev->dev);
@@ -212,7 +233,78 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	                 mpu6050DataStruct->mpu_accel_gyro.gz
 	                             );
 	      }
-	      iio_push_to_buffers(indio_dev, dataw); // accel
+	      if(st->autoCalibrationGyroCounter == 0) {
+	          for(i = 0; i < 3; i++) {
+	              tmp = st->gyroRaw[i] * 80L;
+	              tmp += (mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i] - st->axisOffsetGyro[i]) * 20L;
+	              tmp /= 100L;
+	              // apply offset
+	              st->gyroRaw[i] = tmp;
+                  st->accelRaw[i] = mpu6050DataStruct->mpu_accel_gyro_vect.accel[i] - st->axisOffsetAccel[i];
+
+                  // apply dead band
+                  if(abs(st->gyroRaw[i]) < st->deadbandGyro[i]) { // dead band
+                      st->gyroRaw[i] = 0;
+                  }
+
+                  // for integration
+	              st->sumGyroRaw[i] += st->gyroRaw[i];
+
+                  // 23580000 =  360 * 65.5 (LSB gyro)/dt (dove dt = 1/1000)
+	              if(abs(st->sumGyroRaw[i]) >= 23580000L) {
+	                  st->sumGyroRaw[i] = 0;
+	              }
+	          }
+	          st->outCounter--;
+	          if(st->outCounter == 0) {
+	              iio_push_to_buffers(indio_dev, dataw); // accel
+	              st->outCounter = SAMPLES_IN_FREQUENCY/SAMPLES_OUT_FREQUENCY;
+	              for(i = 0; i < 3; i++) {
+	                  tmp = st->sumGyroRaw[i]/655 +9;
+	                  rpy[i] = tmp/10;
+	              }
+	              printk(KERN_INFO "mpu6050_driver deadband[%d,%d,%d], rpy*10[%d,%d,%d], sumGyroRaw[%d,%d,%d]\n",
+                         st->deadbandGyro[0], st->deadbandGyro[1], st->deadbandGyro[2],
+	                     rpy[0], rpy[1], rpy[2],
+	                     st->sumGyroRaw[0], st->sumGyroRaw[1], st->sumGyroRaw[2]);
+	          }
+	      } else {
+              st->autoCalibrationGyroCounter--;
+              if(st->autoCalibrationGyroCounter < GYRO_CALIBRATION_SAMPLES/2) {
+                  for(i = 0; i < 3; i ++) {
+                      tmp = st->gyroRaw[i] * 80L;
+                      tmp += (mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i]) * 20L;
+                      tmp /= 100L;
+                      st->gyroRaw[i] = tmp;
+                      st->accelRaw[i] = mpu6050DataStruct->mpu_accel_gyro_vect.accel[i];
+                      st->sumCalibrationGyroSamples[i] += st->gyroRaw[i];
+                          if(st->minCalibrationGyroRaw[i] > st->gyroRaw[i]) {
+                              st->minCalibrationGyroRaw[i] = st->gyroRaw[i];
+                          }
+                          if(st->maxCalibrationGyroRaw[i] < st->gyroRaw[i]) {
+                              st->maxCalibrationGyroRaw[i] = st->gyroRaw[i];
+                          }
+                          if(abs(st->gyroRaw[i]) > 500) {
+                              printk(KERN_INFO "mpu6050_driver MAX/MIN [%d] gyroRaw[%d,%d,%d], minCalibrationGyroRaw[%d], maxCalibrationGyroRaw[%d], raw[%d]\n",
+                                     i,
+                                     st->gyroRaw[0], st->gyroRaw[1], st->gyroRaw[2],
+                                     st->minCalibrationGyroRaw[i],
+                                     st->maxCalibrationGyroRaw[i],
+                                     mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i]
+                                     );
+                          }
+                  }
+                  if(st->autoCalibrationGyroCounter == 0) {
+                      for(i = 0; i < 3; i++) {
+                          st->axisOffsetGyro[i] = st->sumCalibrationGyroSamples[i]/(GYRO_CALIBRATION_SAMPLES/2);
+                          st->sumGyroRaw[i] = 0;
+                          st->deadbandGyro[i] = (st->maxCalibrationGyroRaw[i] - st->minCalibrationGyroRaw[i])/2 + 1;
+                          printk(KERN_INFO "mpu6050_driver GyroOffset[%d]=[%d] min=[%d], max=[%d]\n", i, st->axisOffsetGyro[i], st->minCalibrationGyroRaw[i], st->maxCalibrationGyroRaw[i]);
+                      }
+                      st->outCounter = SAMPLES_IN_FREQUENCY/SAMPLES_OUT_FREQUENCY;
+                  }
+              }
+	      }
           st->now = ktime_get();
 	} else {
 	    printk(KERN_INFO "mpu6050_driver message received [%s]\n", (char *)data);
@@ -236,6 +328,7 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 	struct mpu6050_state *st;
 	struct rpmsg_device_id *id;
 	struct iio_buffer *buffer;
+    uint8_t i = 0;
 
 
 	log_debug("probe");
@@ -251,6 +344,21 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 
 	st->rpdev = rpdev;
 	st->dev = &rpdev->dev;
+	st->axisMatrixGyro[0] = 1;
+    st->axisMatrixGyro[1] = -1;
+    st->axisMatrixGyro[2] = 1;
+	st->axisMatrixAccel[0] = 1;
+    st->axisMatrixAccel[1] = 1;
+    st->axisMatrixAccel[2] = 1;
+
+    for(i = 0; i < 3; i++) {
+        st->axisOffsetAccel[i] = 0;
+        st->axisOffsetGyro[i] = 0;
+        st->sumCalibrationGyroSamples[i] = 0;
+        st->minCalibrationGyroRaw[i] = 3000;
+        st->maxCalibrationGyroRaw[i] = -3000;
+    }
+    st->autoCalibrationGyroCounter = GYRO_CALIBRATION_SAMPLES;
 
 	dev_set_drvdata(&rpdev->dev, indio_dev);
 
