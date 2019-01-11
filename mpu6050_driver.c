@@ -25,9 +25,12 @@
 #include "pru_mylinuxdrone.h"
 
 // TODO: convertire in attributi di configurazione
-#define SAMPLES_IN_FREQUENCY 1000
-#define SAMPLES_OUT_FREQUENCY 250
-#define GYRO_CALIBRATION_SAMPLES 10000
+#define SAMPLES_IN_FREQUENCY 1000L
+#define SAMPLES_OUT_FREQUENCY 250L
+#define GYRO_CALIBRATION_SAMPLES 10000L
+#define GYRO_LSB_1000 65500L
+#define GYRO_KALMAN_FACTOR_LEFT (30L)
+#define GYRO_KALMAN_FACTOR_RIGHT (100L - GYRO_KALMAN_FACTOR_LEFT)
 
 /*
  * macro to print debug info easily
@@ -214,7 +217,8 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
     uint8_t i = 0;
     int32_t tmp;
     int16_t rpy[3];
-	uint32_t usec;
+    int32_t yawRadians1M;
+    uint32_t usec;
 
 	indio_dev = dev_get_drvdata(&rpdev->dev);
 	st = iio_priv(indio_dev);
@@ -235,17 +239,15 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	      }
 	      if(st->autoCalibrationGyroCounter == 0) {
 	          for(i = 0; i < 3; i++) {
-	              tmp = st->gyroRaw[i] * 80L;
-	              tmp += (mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i] - st->axisOffsetGyro[i]) * 20L;
-	              tmp /= 100L;
+	              tmp = ((int32_t)st->gyroRaw[i] * GYRO_KALMAN_FACTOR_LEFT + (int32_t)(mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i] - st->axisOffsetGyro[i]) * GYRO_KALMAN_FACTOR_RIGHT) / 100L;
 	              // apply offset
 	              st->gyroRaw[i] = tmp;
                   st->accelRaw[i] = mpu6050DataStruct->mpu_accel_gyro_vect.accel[i] - st->axisOffsetAccel[i];
 
-                  // apply dead band
-                  if(abs(st->gyroRaw[i]) < st->deadbandGyro[i]) { // dead band
-                      st->gyroRaw[i] = 0;
-                  }
+//                  // apply dead band
+//                  if(abs(st->gyroRaw[i]) < st->deadbandGyro[i]) { // dead band
+//                      st->gyroRaw[i] = 0;
+//                  }
 
                   // for integration
 	              st->sumGyroRaw[i] += st->gyroRaw[i];
@@ -255,26 +257,78 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	                  st->sumGyroRaw[i] = 0;
 	              }
 	          }
+
+	          /* ----------------------------------------------------------------------
+	           *                          T. B. D. START
+	           * ---------------------------------------------------------------------- */
+	          // compensate yaw rotation
+              tmp = (int32_t)st->gyroRaw[2];
+              tmp *= 1000L;
+              tmp *= 314L;
+              tmp /= 18L;
+              tmp /= GYRO_LSB_1000;
+              yawRadians1M = tmp; // * (1000/SAMPLES_IN_FREQUENCY)
+              tmp = st->sumGyroRaw[0];
+              st->sumGyroRaw[0] += (st->axisMatrixGyro[1]*st->sumGyroRaw[1]*st->axisMatrixGyro[2]*yawRadians1M)/1000000L;
+              st->sumGyroRaw[1] += (st->axisMatrixGyro[0]*tmp*st->axisMatrixGyro[2]*yawRadians1M)/1000000L;
+              /* ----------------------------------------------------------------------
+               *                          T. B. D. END
+               * ---------------------------------------------------------------------- */
+
 	          st->outCounter--;
 	          if(st->outCounter == 0) {
 	              iio_push_to_buffers(indio_dev, dataw); // accel
 	              st->outCounter = SAMPLES_IN_FREQUENCY/SAMPLES_OUT_FREQUENCY;
 	              for(i = 0; i < 3; i++) {
-	                  tmp = st->sumGyroRaw[i]/655 +9;
-	                  rpy[i] = tmp/10;
+	                  // TODO: 655 è GYRO_LSB*10. usare parametri di configurazione
+	                  // TODO: dt è 1/SAMPLE_IN_FREQUENCY. usare parametri di configurazione
+	                  // RPY in gradi è dato da sumGyroRaw/GYRO_LSB*dt qui trascritto in forma (sumGyroRaw*10/(GYRO_LSB*1000))*(dt*1000)
+	                  // sotto calcolo RPY in decimi di grado (per questo divido per 10 e non per 100)
+	                  rpy[i] = st->sumGyroRaw[i]*10/GYRO_LSB_1000*(1000/SAMPLES_IN_FREQUENCY);
 	              }
-	              printk(KERN_INFO "mpu6050_driver deadband[%d,%d,%d], rpy*10[%d,%d,%d], sumGyroRaw[%d,%d,%d]\n",
-                         st->deadbandGyro[0], st->deadbandGyro[1], st->deadbandGyro[2],
-	                     rpy[0], rpy[1], rpy[2],
-	                     st->sumGyroRaw[0], st->sumGyroRaw[1], st->sumGyroRaw[2]);
+	              // dato dyaw = (gyroRaw[2]/GYROLSB)*(2pi/360/dt), Roll e Pitch devono essere compensati in funzione di dyaw
+	              // tmp = rpy[0]
+	              // rpy[0] = rpy[0] + axisMatrixGyro[1]*rpy[1]*sin(dyaw)
+                  // rpy[1] = rpy[1] + axisMatrixGyro[0]*tmp*sin(dyaw)
+	              // sin(dyaw) può essere approssimata con dyaw - 1/6*dyaw^3 o persino con dyaw se è piccolo
+
+	              // TODO: implementing ...
+//	              tmp = (int32_t)st->gyroRaw[2];
+//	              tmp *= 1000L;
+//	              tmp *= 314L;
+//	              tmp /= 36L;
+//	              tmp /= GYRO_LSB_1000;
+//	              yawRadians1M = tmp; // * (1000/SAMPLES_IN_FREQUENCY)
+//	              // con alte frequenze è possibile usare direttamente yawRadians invece che sinYawRadians
+//	              sinYawRadians1M = (yawRadians1M*1000000L
+//	                      - (yawRadians1M * yawRadians1M * yawRadians1M)/6L/1000000L)/1000000L;
+//                  tmp = rpy[0];
+//
+//                  tmp_vect[0] = rpy[0];
+//                  tmp_vect[1] = rpy[1];
+//                  tmp_vect[2] = rpy[2];
+//
+//                  // FIXME: qui ci sono numeri troppo grandi per int32
+//	              rpy[0] = (rpy[0]*1000L + st->axisMatrixGyro[1]*(rpy[1]*1000L * sinYawRadians1M)/1000000L)/1000L;
+//	              rpy[1] = (rpy[1]*1000L + st->axisMatrixGyro[0]*(tmp*1000L * sinYawRadians1M)/1000000L)/1000L;
+
+	              /*
+	               * Fare i conti con:
+	               *    tmp_vect[-447,431,568],
+	               *    rpyC[-446,431,568],
+	               *    yawRadians1M[-415],
+	               *    sinYawRadians1M[-414],
+	               *    gyroRawYaw[-3122]
+	               */
+
+	              printk(KERN_INFO "mpu6050_driver rpyC[%d,%d,%d], yawRadians1M[%d], gyroRawYaw[%d], sumGyroRawRoll[%d], sumGyroRawPitch[%d]\n",
+	                     rpy[0], rpy[1], rpy[2], (int32_t)yawRadians1M,st->gyroRaw[2],st->sumGyroRaw[0],st->sumGyroRaw[1]);
 	          }
 	      } else {
               st->autoCalibrationGyroCounter--;
               if(st->autoCalibrationGyroCounter < GYRO_CALIBRATION_SAMPLES/2) {
                   for(i = 0; i < 3; i ++) {
-                      tmp = st->gyroRaw[i] * 80L;
-                      tmp += (mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i]) * 20L;
-                      tmp /= 100L;
+                      tmp = ((int32_t)st->gyroRaw[i] * GYRO_KALMAN_FACTOR_LEFT + (int32_t)(mpu6050DataStruct->mpu_accel_gyro_vect.gyro[i]) * GYRO_KALMAN_FACTOR_RIGHT) / 100L;
                       st->gyroRaw[i] = tmp;
                       st->accelRaw[i] = mpu6050DataStruct->mpu_accel_gyro_vect.accel[i];
                       st->sumCalibrationGyroSamples[i] += st->gyroRaw[i];
@@ -346,7 +400,7 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 	st->dev = &rpdev->dev;
 	st->axisMatrixGyro[0] = 1;
     st->axisMatrixGyro[1] = -1;
-    st->axisMatrixGyro[2] = 1;
+    st->axisMatrixGyro[2] = -1;
 	st->axisMatrixAccel[0] = 1;
     st->axisMatrixAccel[1] = 1;
     st->axisMatrixAccel[2] = 1;
