@@ -79,6 +79,10 @@ typedef struct
         } mpu_accel_gyro_vect;
         struct
         {
+            int16_t value[6];
+        } mpu_accel_gyro_single_vect;
+        struct
+        {
             int16_t ax;
             int16_t ay;
             int16_t az;

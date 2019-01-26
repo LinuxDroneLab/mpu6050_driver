@@ -115,11 +115,11 @@ static int mpu6050_read_from_pru(struct iio_dev *indio_dev)
 		dev_err(st->dev, "Failed sending start mpu message to PRUs\n");
 	}
 
-    ((PrbMessageType*)startMessage)->message_type = RC_ENABLE_MSG_TYPE;
-    ret = rpmsg_send(st->rpdev->ept, (void *)startMessage, sizeof(PrbMessageType));
-    if (ret) {
-        dev_err(st->dev, "Failed sending start rc message to PRUs\n");
-    }
+//    ((PrbMessageType*)startMessage)->message_type = RC_ENABLE_MSG_TYPE;
+//    ret = rpmsg_send(st->rpdev->ept, (void *)startMessage, sizeof(PrbMessageType));
+//    if (ret) {
+//        dev_err(st->dev, "Failed sending start rc message to PRUs\n");
+//    }
 	return 0;
 }
 
