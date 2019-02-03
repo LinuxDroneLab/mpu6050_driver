@@ -352,7 +352,7 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 
 //                  printk(KERN_INFO "mpu6050_driver rpy[%d,%d,%d], yawRadians1M[%d], gyroRawYaw[%d], sumGyroRawRoll[%d], sumGyroRawPitch[%d]\n",
 //                         rpy[0], rpy[1], rpy[2], (int32_t)yawRadians1M,st->gyroRaw[2],st->sumGyroRaw[0],st->sumGyroRaw[1]);
-	              printk(KERN_INFO "mpu6050_driver %d,%d,%d,%d,%d,%d; yawRadians[%d]\n",rpy[0], rpy[1], rpy[2], st->sumGyroRaw[0], st->sumGyroRaw[1],st->sumGyroRaw[2], yawRadians1M);
+//	              printk(KERN_INFO "mpu6050_driver %d,%d,%d,%d,%d,%d; yawRadians[%d]\n",rpy[0], rpy[1], rpy[2], st->sumGyroRaw[0], st->sumGyroRaw[1],st->sumGyroRaw[2], yawRadians1M);
 	          }
 	      } else {
               st->autoCalibrationGyroCounter--;
