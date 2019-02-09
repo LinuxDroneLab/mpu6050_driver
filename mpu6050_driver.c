@@ -206,12 +206,7 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 {
 	struct mpu6050_state *st;
 	struct iio_dev *indio_dev;
-	u16 *dataw = data;
 	PrbMessageType* mpu6050DataStruct = (PrbMessageType*)data;
-    uint8_t i = 0;
-    int32_t tmp;
-    int32_t rpy[3];
-    int32_t yawRadians1M;
     uint32_t usec;
 
 	indio_dev = dev_get_drvdata(&rpdev->dev);
@@ -220,7 +215,7 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	if(len == sizeof(PrbMessageType)) {
 	      st->later = ktime_get();
 	      usec = ktime_us_delta(st->later, st->now);
-	      if(usec > 1500) {
+	      if(usec > 1400) {
 	          printk(KERN_INFO "mpu6050_driver time exceeds [%d]\n", usec);
 	          printk(KERN_INFO "a[%d,%d,%d], g[%d,%d,%d]\n",
 	                 mpu6050DataStruct->mpu_accel_gyro.ax,
@@ -254,7 +249,6 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 	struct mpu6050_state *st;
 	struct rpmsg_device_id *id;
 	struct iio_buffer *buffer;
-    uint8_t i = 0;
 
 
 	log_debug("probe");
