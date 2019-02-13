@@ -51,6 +51,7 @@ enum message_types {
     BAROMETER_DATA_MSG_TYPE,
     MPU_CONFIG_MSG_TYPE,
     MOTORS_DATA_MSG_TYPE,
+    RC_DATA_MSG_TYPE,
     MPU_ENABLE_MSG_TYPE,
     COMPASS_ENABLE_MSG_TYPE,
     BAROMETER_ENABLE_MSG_TYPE,
@@ -58,7 +59,9 @@ enum message_types {
     MPU_DISABLE_MSG_TYPE,
     COMPASS_DISABLE_MSG_TYPE,
     BAROMETER_DISABLE_MSG_TYPE,
-    MOTORS_DISABLE_MSG_TYPE
+    MOTORS_DISABLE_MSG_TYPE,
+    RC_ENABLE_MSG_TYPE,
+    RC_DISABLE_MSG_TYPE
 };
 
 typedef struct
@@ -66,6 +69,16 @@ typedef struct
     uint32_t message_type;
     union
     {
+        struct {
+            uint32_t throttle;
+            uint32_t yaw;
+            uint32_t pitch;
+            uint32_t roll;
+            uint32_t aux1;
+            uint32_t aux2;
+            uint32_t aux3;
+            uint32_t aux4;
+        } rc;
         struct
         {
             uint16_t m[4];
@@ -75,6 +88,10 @@ typedef struct
             int16_t accel[3];
             int16_t gyro[3];
         } mpu_accel_gyro_vect;
+        struct
+        {
+            int16_t value[6];
+        } mpu_accel_gyro_single_vect;
         struct
         {
             int16_t ax;

@@ -206,6 +206,7 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 {
 	struct mpu6050_state *st;
 	struct iio_dev *indio_dev;
+        u16* dataw = data;
 	PrbMessageType* mpu6050DataStruct = (PrbMessageType*)data;
     uint32_t usec;
 
@@ -213,19 +214,36 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	st = iio_priv(indio_dev);
 
 	if(len == sizeof(PrbMessageType)) {
-	      st->later = ktime_get();
-	      usec = ktime_us_delta(st->later, st->now);
-	      if(usec > 1400) {
-	          printk(KERN_INFO "mpu6050_driver time exceeds [%d]\n", usec);
-	          printk(KERN_INFO "a[%d,%d,%d], g[%d,%d,%d]\n",
-	                 mpu6050DataStruct->mpu_accel_gyro.ax,
-	                 mpu6050DataStruct->mpu_accel_gyro.ay,
-	                 mpu6050DataStruct->mpu_accel_gyro.az,
-	                 mpu6050DataStruct->mpu_accel_gyro.gx,
-	                 mpu6050DataStruct->mpu_accel_gyro.gy,
-	                 mpu6050DataStruct->mpu_accel_gyro.gz
-	                             );
-	      }
+	    switch(mpu6050DataStruct->message_type) {
+	    case MPU_DATA_MSG_TYPE: {
+	          iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
+	          st->later = ktime_get();
+	          usec = ktime_us_delta(st->later, st->now);
+	          if(usec > 1400) {
+	              printk(KERN_INFO "mpu6050_driver time exceeds [%d]\n", usec);
+	              printk(KERN_INFO "a[%d,%d,%d], g[%d,%d,%d]\n",
+	                     mpu6050DataStruct->mpu_accel_gyro.ax,
+	                     mpu6050DataStruct->mpu_accel_gyro.ay,
+	                     mpu6050DataStruct->mpu_accel_gyro.az,
+	                     mpu6050DataStruct->mpu_accel_gyro.gx,
+	                     mpu6050DataStruct->mpu_accel_gyro.gy,
+	                     mpu6050DataStruct->mpu_accel_gyro.gz
+	                                 );
+	          }
+	          break;
+	    }
+        case RC_DATA_MSG_TYPE: {
+            printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d]\n",
+                   mpu6050DataStruct->rc.throttle,
+                   mpu6050DataStruct->rc.yaw,
+                   mpu6050DataStruct->rc.pitch,
+                   mpu6050DataStruct->rc.roll,
+                   mpu6050DataStruct->rc.aux1,
+                   mpu6050DataStruct->rc.aux2
+                   );
+            break;
+        }
+	    }
           st->now = ktime_get();
 	} else {
 	    printk(KERN_INFO "mpu6050_driver message received [%s]\n", (char *)data);
