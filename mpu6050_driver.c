@@ -233,13 +233,15 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	          break;
 	    }
         case RC_DATA_MSG_TYPE: {
-            printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d]\n",
+            printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d],A3[%d],A4[%d]\n",
                    mpu6050DataStruct->rc.throttle,
                    mpu6050DataStruct->rc.yaw,
                    mpu6050DataStruct->rc.pitch,
                    mpu6050DataStruct->rc.roll,
                    mpu6050DataStruct->rc.aux1,
-                   mpu6050DataStruct->rc.aux2
+                   mpu6050DataStruct->rc.aux2,
+                   mpu6050DataStruct->rc.aux3,
+                   mpu6050DataStruct->rc.aux4
                    );
             break;
         }
