@@ -245,6 +245,15 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
                    );
             break;
         }
+        case MOTORS_DATA_MSG_TYPE: {
+            printk(KERN_INFO "M1[%d],M2[%d],M3[%d],M4[%d]\n",
+                   mpu6050DataStruct->motors_vect.m[0],
+                   mpu6050DataStruct->motors_vect.m[1],
+                   mpu6050DataStruct->motors_vect.m[2],
+                   mpu6050DataStruct->motors_vect.m[3]
+                   );
+            break;
+        }
 	    }
           st->now = ktime_get();
 	} else {

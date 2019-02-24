@@ -79,10 +79,16 @@ typedef struct
             uint32_t aux3;
             uint32_t aux4;
         } rc;
+        struct {
+            uint16_t m1;
+            uint16_t m2;
+            uint16_t m3;
+            uint16_t m4;
+        } motors;
         struct
         {
             uint16_t m[4];
-        } motors;
+        } motors_vect;
         struct
         {
             int16_t accel[3];
