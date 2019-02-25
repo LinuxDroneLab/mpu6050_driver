@@ -70,14 +70,14 @@ typedef struct
     union
     {
         struct {
-            uint32_t throttle;
-            uint32_t yaw;
-            uint32_t pitch;
-            uint32_t roll;
-            uint32_t aux1;
-            uint32_t aux2;
-            uint32_t aux3;
-            uint32_t aux4;
+            uint16_t throttle;
+            int16_t yaw;
+            int16_t pitch;
+            int16_t roll;
+            int16_t aux1;
+            int16_t aux2;
+            int16_t aux3;
+            int16_t aux4;
         } rc;
         struct {
             uint16_t m1;
