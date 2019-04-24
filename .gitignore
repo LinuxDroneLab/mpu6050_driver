@@ -10,4 +10,5 @@ appunti.txt
 *.order
 *.ko
 *.mod.*
-
+syslog
+*.sci

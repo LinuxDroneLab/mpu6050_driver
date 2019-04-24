@@ -53,16 +53,44 @@ struct mpu6050_state {
 /* mpu6050_channels - structure that holds information about the
    channels that are present */
 static const struct iio_chan_spec mpu6050_channels[] = {
-	{
+	{// accel, gyro, motors, rc, etc... all in one buffer
 		.type = IIO_ACCEL,
 		.indexed = 1,
 		.channel = 0,
-		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.info_mask_separate = BIT(IIO_CHAN_INFO_ENABLE) | BIT(IIO_CHAN_INFO_FREQUENCY),
         .scan_index = 0,
         .scan_type = {
                 .sign = 's',
-                .realbits = 160,
-                .storagebits = 160,
+                .realbits = sizeof(PrbMessageType),
+                .storagebits = sizeof(PrbMessageType),
+                .shift = 0,
+                .endianness = IIO_LE,
+        },
+    },
+    {// RC
+        .type = IIO_ROT,
+        .indexed = 1,
+        .channel = 0,
+        .info_mask_separate = BIT(IIO_CHAN_INFO_ENABLE),
+        .scan_index = 1,
+        .scan_type = {
+                .sign = 's',
+                .realbits = sizeof(PrbMessageType),
+                .storagebits = sizeof(PrbMessageType),
+                .shift = 0,
+                .endianness = IIO_LE,
+        },
+    },
+    {// Motors
+        .type = IIO_VELOCITY,
+        .indexed = 1,
+        .channel = 0,
+        .info_mask_separate = BIT(IIO_CHAN_INFO_ENABLE),
+        .scan_index = 2,
+        .scan_type = {
+                .sign = 's',
+                .realbits = sizeof(PrbMessageType),
+                .storagebits = sizeof(PrbMessageType),
                 .shift = 0,
                 .endianness = IIO_LE,
         },
@@ -233,6 +261,7 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	          break;
 	    }
         case RC_DATA_MSG_TYPE: {
+            iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
             printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d],A3[%d],A4[%d]\n",
                    mpu6050DataStruct->rc.throttle,
                    mpu6050DataStruct->rc.yaw,
@@ -246,6 +275,7 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
             break;
         }
         case MOTORS_DATA_MSG_TYPE: {
+            iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
             printk(KERN_INFO "M1[%d],M2[%d],M3[%d],M4[%d]\n",
                    mpu6050DataStruct->motors_vect.m[0],
                    mpu6050DataStruct->motors_vect.m[1],
@@ -283,6 +313,13 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 	log_debug("probe");
     printk(KERN_INFO "mpu6050_driver_probe.\n");
 
+    /*
+     * TODO: creare un iio device per ogni sensore, attuatore e pid
+     * Questo permette di avere iio buffer separati ed aggiornati
+     * con diversa frequenza.
+     * I dati sono necessari per la trasmissione da/verso una
+     * ground station. La gestione iio non è prioritaria
+     */
 	indio_dev = devm_iio_device_alloc(&rpdev->dev, sizeof(*st));
 	if (!indio_dev) {
 		return -ENOMEM;
