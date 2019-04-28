@@ -115,7 +115,8 @@ static int mpu6050_read_from_pru(struct iio_dev *indio_dev)
 	int ret;
 	struct mpu6050_state *st;
     unsigned char startMessage[sizeof(PrbMessageType)];
-    ((PrbMessageType*)startMessage)->message_type = MPU_ENABLE_MSG_TYPE;
+//    ((PrbMessageType*)startMessage)->message_type = MPU_ENABLE_MSG_TYPE;
+    ((PrbMessageType*)startMessage)->message_type = MPU_CREATE_CHANNEL_MSG_TYPE;
 	log_debug("mpu6050_read_from_pru");
 
 	st = iio_priv(indio_dev);
@@ -141,7 +142,8 @@ static int mpu6050_stop_sampling_pru(struct iio_dev *indio_dev )
 	int ret;
 	unsigned char stop_val[sizeof(PrbMessageType)];
     struct mpu6050_state *st;
-	((PrbMessageType*)stop_val)->message_type = MPU_DISABLE_MSG_TYPE;
+//	((PrbMessageType*)stop_val)->message_type = MPU_DISABLE_MSG_TYPE;
+    ((PrbMessageType*)stop_val)->message_type = MPU_DESTROY_CHANNEL_MSG_TYPE;
 
 	st = iio_priv(indio_dev);
 
@@ -176,7 +178,7 @@ static int mpu6050_buffer_postenable(struct iio_dev *indio_dev)
 }
 
 /*
- * mpu6050_buffer_postenable - function to do necessay work
+ * mpu6050_buffer_postenable - function to do necessary work
  * just before the buffer gets disabled
  */
 static int mpu6050_buffer_predisable(struct iio_dev *indio_dev)
@@ -262,16 +264,22 @@ static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
 	    }
         case RC_DATA_MSG_TYPE: {
             iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
-            printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d],A3[%d],A4[%d]\n",
-                   mpu6050DataStruct->rc.throttle,
-                   mpu6050DataStruct->rc.yaw,
-                   mpu6050DataStruct->rc.pitch,
-                   mpu6050DataStruct->rc.roll,
-                   mpu6050DataStruct->rc.aux1,
-                   mpu6050DataStruct->rc.aux2,
-                   mpu6050DataStruct->rc.aux3,
-                   mpu6050DataStruct->rc.aux4
+            printk(KERN_INFO "ID[%s],SRC[%d],DST[%d], EPT[%d]\n",
+                   rpdev->id.name,
+                   rpdev->src,
+                   rpdev->dst,
+                   rpdev->ept->addr
                    );
+//            printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d],A3[%d],A4[%d]\n",
+//                   mpu6050DataStruct->rc.throttle,
+//                   mpu6050DataStruct->rc.yaw,
+//                   mpu6050DataStruct->rc.pitch,
+//                   mpu6050DataStruct->rc.roll,
+//                   mpu6050DataStruct->rc.aux1,
+//                   mpu6050DataStruct->rc.aux2,
+//                   mpu6050DataStruct->rc.aux3,
+//                   mpu6050DataStruct->rc.aux4
+//                   );
             break;
         }
         case MOTORS_DATA_MSG_TYPE: {
@@ -311,7 +319,7 @@ static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
 
 
 	log_debug("probe");
-    printk(KERN_INFO "mpu6050_driver_probe.\n");
+    printk(KERN_INFO "mpu6050_driver_probe [%s].\n", rpdev->id.name);
 
     /*
      * TODO: creare un iio device per ogni sensore, attuatore e pid
@@ -384,7 +392,7 @@ static void mpu6050_driver_remove(struct rpmsg_device *rpdev)
 
     printk(KERN_INFO "mpu6050_driver_remove.\n");
 	indio_dev = dev_get_drvdata(&rpdev->dev);
-
+	iio_device_unregister(indio_dev);
 	iio_device_free(indio_dev);
 }
 
@@ -392,6 +400,7 @@ static void mpu6050_driver_remove(struct rpmsg_device *rpdev)
    should be probed */
 static const struct rpmsg_device_id mpu6050_id[] = {
 		{ .name = "pru-mylinuxdrone" },
+        { .name = "pru-mpu6050" },
 		{ },
 };
 MODULE_DEVICE_TABLE(rpmsg, mpu6050_id);
