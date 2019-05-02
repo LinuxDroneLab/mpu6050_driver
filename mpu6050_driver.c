@@ -24,35 +24,73 @@
 #include <linux/ktime.h>
 #include "pru_mylinuxdrone.h"
 
-// TODO: convertire in attributi di configurazione
-//#define SAMPLES_IN_FREQUENCY 1000L
-//#define SAMPLES_OUT_FREQUENCY 250L
-//#define GYRO_CALIBRATION_SAMPLES 10000L
-//#define GYRO_LSB_1000 65500L
-//#define GYRO_KALMAN_FACTOR_LEFT (30L)
-//#define GYRO_KALMAN_FACTOR_RIGHT (100L - GYRO_KALMAN_FACTOR_LEFT)
-////#define HPF_GYRO_ALFA_100000 24145 // 250Hz
-////#define HPF_GYRO_ALFA_100000 76094 // 50Hz
-////#define HPF_GYRO_ALFA_100000 72500 // 60Hz
-//#define HPF_GYRO_ALFA_100000 67970 // 75Hz
-////#define HPF_GYRO_ALFA_100000 61413 // 100Hz
-
 /*
  * macro to print debug info easily
  */
 #define log_debug(msg) printk(KERN_INFO "%s: %s\n", __FILE__, msg);
 
-struct mpu6050_state {
-	struct rpmsg_device *rpdev;
-	struct device *dev;
-	wait_queue_head_t wait_list;
-	ktime_t now;
-	ktime_t later;
+struct pru_channel {
+    struct rpmsg_device *rpdev;
+    struct device cntrdev;
+};
+static const struct device_type pru_channel_type = {
+        .name           = "pru_channel",
 };
 
-/* mpu6050_channels - structure that holds information about the
+struct device* pru_control_ptr;
+
+/*************************************************************************************
+ * PRU IMU DRIVER START
+ *************************************************************************************/
+struct pru_imu {
+    struct pru_channel chst;
+};
+
+
+static struct pru_imu *dev_to_pru_imu(struct device *dev)
+{
+        return container_of(dev, struct pru_imu, chst.cntrdev);
+}
+static void pru_imu_release(struct device *dev)
+{
+    struct pru_imu *pc = dev_to_pru_imu(dev);
+    printk(KERN_INFO "pru_imu_release.\n");
+    kfree(pc);
+}
+static ssize_t imu_start_store(struct device *dev,
+                            struct device_attribute *attr,
+                            const char *buf, size_t len)
+{
+        struct pru_imu *ch = dev_to_pru_imu(dev);
+        unsigned int enable;
+        int ret;
+
+        ret = kstrtouint(buf, 0, &enable);
+        if (ret < 0)
+                return ret;
+        if (enable > 1)
+                return -EINVAL;
+
+        if(enable == 1) {
+            // TODO: inviare messaggio di start
+            printk(KERN_INFO "pru_imu_store: started.\n");
+        } else {
+            // TODO: inviare messaggio di stop
+            printk(KERN_INFO "pru_imu_store: stopped.\n");
+        }
+        return ret ? : len;
+}
+static DEVICE_ATTR_WO(imu_start);
+
+static struct attribute *pru_imu_attrs[] = {
+        &dev_attr_imu_start.attr,
+        NULL,
+};
+ATTRIBUTE_GROUPS(pru_imu);
+
+/* imu_channels - structure that holds information about the
    channels that are present */
-static const struct iio_chan_spec mpu6050_channels[] = {
+static const struct iio_chan_spec imu_channels[] = {
 	{// accel, gyro, motors, rc, etc... all in one buffer
 		.type = IIO_ACCEL,
 		.indexed = 1,
@@ -67,390 +105,340 @@ static const struct iio_chan_spec mpu6050_channels[] = {
                 .endianness = IIO_LE,
         },
     },
-    {// RC
-        .type = IIO_ROT,
-        .indexed = 1,
-        .channel = 0,
-        .info_mask_separate = BIT(IIO_CHAN_INFO_ENABLE),
-        .scan_index = 1,
-        .scan_type = {
-                .sign = 's',
-                .realbits = sizeof(PrbMessageType),
-                .storagebits = sizeof(PrbMessageType),
-                .shift = 0,
-                .endianness = IIO_LE,
-        },
-    },
-    {// Motors
-        .type = IIO_VELOCITY,
-        .indexed = 1,
-        .channel = 0,
-        .info_mask_separate = BIT(IIO_CHAN_INFO_ENABLE),
-        .scan_index = 2,
-        .scan_type = {
-                .sign = 's',
-                .realbits = sizeof(PrbMessageType),
-                .storagebits = sizeof(PrbMessageType),
-                .shift = 0,
-                .endianness = IIO_LE,
-        },
-    },
-};
-
-/*
- * mpu6050_read_from_pru - To start the PRUs in the required reading mode
- *
- * @indio_dev	pointer to the instance of iio device
- *
- * Description - The function starts the PRUs by sending a start message
- * The message is then dispatched by the
- * rpmsg callback method. This function also checks if the required rpmsg device
- * has been released or not. If it has been released, the driver would return
- * with an error.
- *
- * The rpmsg callback method then pushes the data onto the iio_buffer.
- */
-static int mpu6050_read_from_pru(struct iio_dev *indio_dev)
-{
-	int ret;
-	struct mpu6050_state *st;
-    unsigned char startMessage[sizeof(PrbMessageType)];
-//    ((PrbMessageType*)startMessage)->message_type = MPU_ENABLE_MSG_TYPE;
-    ((PrbMessageType*)startMessage)->message_type = MPU_CREATE_CHANNEL_MSG_TYPE;
-	log_debug("mpu6050_read_from_pru");
-
-	st = iio_priv(indio_dev);
-
-	if (!st->rpdev){
-		dev_err(st->dev, "Required rpmsg device has been released\n");
-		return -EINVAL;
-	}
-
-	ret = rpmsg_send(st->rpdev->ept, (void *)startMessage, sizeof(PrbMessageType));
-	if (ret) {
-		dev_err(st->dev, "Failed sending start mpu message to PRUs\n");
-	}
-
-	return 0;
-}
-
-/*
- * mpu6050_stop_sampling - to stop sampling process of the PRUS immediately
- */
-static int mpu6050_stop_sampling_pru(struct iio_dev *indio_dev )
-{
-	int ret;
-	unsigned char stop_val[sizeof(PrbMessageType)];
-    struct mpu6050_state *st;
-//	((PrbMessageType*)stop_val)->message_type = MPU_DISABLE_MSG_TYPE;
-    ((PrbMessageType*)stop_val)->message_type = MPU_DESTROY_CHANNEL_MSG_TYPE;
-
-	st = iio_priv(indio_dev);
-
-	if (!st->rpdev){
-		dev_err(st->dev, "Required rpmsg device already released\n");
-		return -EINVAL;
-	}
-
-	ret = rpmsg_send(st->rpdev->ept, (void *)stop_val, sizeof(PrbMessageType));
-	if (ret)
-		dev_err(st->dev, "failed to stop mpu6050 sampling\n");
-
-	return ret;
-}
-
-/*
- * mpu6050_buffer_postenable - function to do necessay work
- * just after the buffer gets enabled
- */
-static int mpu6050_buffer_postenable(struct iio_dev *indio_dev)
-{
-	int ret;
-	struct mpu6050_state *st;
-
-    log_debug("postenable");
-	st = iio_priv(indio_dev);
-	st->now = ktime_get();
-	st->later = ktime_get();
-	ret = mpu6050_read_from_pru(indio_dev);
-    printk(KERN_INFO "mpu6050_driver postenable result [%d]\n", ret);
-	return ret;
-}
-
-/*
- * mpu6050_buffer_postenable - function to do necessary work
- * just before the buffer gets disabled
- */
-static int mpu6050_buffer_predisable(struct iio_dev *indio_dev)
-{
-	log_debug("predisable");
-	return mpu6050_stop_sampling_pru(indio_dev);
-}
-
-static const struct iio_buffer_setup_ops mpu6050_buffer_setup_ops = {
-	.postenable = &mpu6050_buffer_postenable,
-	.predisable = &mpu6050_buffer_predisable,
-};
-
-static int mpu6050_read_raw(struct iio_dev *indio_dev,
-               struct iio_chan_spec const *chan,
-               int *val,
-               int *val2,
-               long mask)
-{
-       struct mpu6050_state *st;
-       st = iio_priv(indio_dev);
-       log_debug("read_raw");
-       printk(KERN_INFO "mpu6050_driver read_raw. Not implemented yet!\n");
-       return 0;
-}
-
-static int mpu6050_write_raw(struct iio_dev *indio_dev,
-			       struct iio_chan_spec const *chan,
-			       int val,
-			       int val2,
-			       long mask)
-{
-	struct mpu6050_state *st;
-	st = iio_priv(indio_dev);
-
-    printk(KERN_INFO "mpu6050_driver write_raw %d. Not implemented yet!\n", val);
-	log_debug("write_raw");
-	return 0;
-}
-
-/* mpu6050_info - Structure contains constant data about the driver */
-static const struct iio_info mpu6050_info = {
-	.read_raw = mpu6050_read_raw,
-	.write_raw = mpu6050_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 /**
- * mpu6050_driver_cb() - function gets invoked each time the pru sends some
- * data.
- *
- */
-static int mpu6050_driver_cb(struct rpmsg_device *rpdev, void *data,
-				  int len, void *priv, u32 src)
-{
-	struct mpu6050_state *st;
-	struct iio_dev *indio_dev;
-        u16* dataw = data;
-	PrbMessageType* mpu6050DataStruct = (PrbMessageType*)data;
-    uint32_t usec;
-
-	indio_dev = dev_get_drvdata(&rpdev->dev);
-	st = iio_priv(indio_dev);
-
-	if(len == sizeof(PrbMessageType)) {
-	    switch(mpu6050DataStruct->message_type) {
-	    case MPU_DATA_MSG_TYPE: {
-	          iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
-	          st->later = ktime_get();
-	          usec = ktime_us_delta(st->later, st->now);
-	          if(usec > 1400) {
-	              printk(KERN_INFO "mpu6050_driver time exceeds [%d]\n", usec);
-	              printk(KERN_INFO "a[%d,%d,%d], g[%d,%d,%d]\n",
-	                     mpu6050DataStruct->mpu_accel_gyro.ax,
-	                     mpu6050DataStruct->mpu_accel_gyro.ay,
-	                     mpu6050DataStruct->mpu_accel_gyro.az,
-	                     mpu6050DataStruct->mpu_accel_gyro.gx,
-	                     mpu6050DataStruct->mpu_accel_gyro.gy,
-	                     mpu6050DataStruct->mpu_accel_gyro.gz
-	                                 );
-	          }
-	          break;
-	    }
-        case RC_DATA_MSG_TYPE: {
-            iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
-            printk(KERN_INFO "ID[%s],SRC[%d],DST[%d], EPT[%d]\n",
-                   rpdev->id.name,
-                   rpdev->src,
-                   rpdev->dst,
-                   rpdev->ept->addr
-                   );
-//            printk(KERN_INFO "T[%d],Y[%d],P[%d],R[%d],A1[%d],A2[%d],A3[%d],A4[%d]\n",
-//                   mpu6050DataStruct->rc.throttle,
-//                   mpu6050DataStruct->rc.yaw,
-//                   mpu6050DataStruct->rc.pitch,
-//                   mpu6050DataStruct->rc.roll,
-//                   mpu6050DataStruct->rc.aux1,
-//                   mpu6050DataStruct->rc.aux2,
-//                   mpu6050DataStruct->rc.aux3,
-//                   mpu6050DataStruct->rc.aux4
-//                   );
-            break;
-        }
-        case MOTORS_DATA_MSG_TYPE: {
-            iio_push_to_buffers(indio_dev, dataw); // write data to iio buffer
-            printk(KERN_INFO "M1[%d],M2[%d],M3[%d],M4[%d]\n",
-                   mpu6050DataStruct->motors_vect.m[0],
-                   mpu6050DataStruct->motors_vect.m[1],
-                   mpu6050DataStruct->motors_vect.m[2],
-                   mpu6050DataStruct->motors_vect.m[3]
-                   );
-            break;
-        }
-	    }
-          st->now = ktime_get();
-	} else {
-	    printk(KERN_INFO "mpu6050_driver message received [%s]\n", (char *)data);
-	}
-	return 0;
-}
-
-/**
- * mpu6050_driver_probe() - function gets invoked when the rpmsg channel
- * as mentioned in the mpu6050_id table
- *
- * The function
- * - allocates space for the IIO device
- * - registers the device to the IIO subsystem
- * - exposes the sys entries according to the channels info
- */
-static int mpu6050_driver_probe (struct rpmsg_device *rpdev)
-{
-	int ret;
-	struct iio_dev *indio_dev;
-	struct mpu6050_state *st;
-	struct rpmsg_device_id *id;
-	struct iio_buffer *buffer;
-
-
-	log_debug("probe");
-    printk(KERN_INFO "mpu6050_driver_probe [%s].\n", rpdev->id.name);
-
-    /*
-     * TODO: creare un iio device per ogni sensore, attuatore e pid
-     * Questo permette di avere iio buffer separati ed aggiornati
-     * con diversa frequenza.
-     * I dati sono necessari per la trasmissione da/verso una
-     * ground station. La gestione iio non è prioritaria
-     */
-	indio_dev = devm_iio_device_alloc(&rpdev->dev, sizeof(*st));
-	if (!indio_dev) {
-		return -ENOMEM;
-	}
-
-	id = &rpdev->id;
-	st = iio_priv(indio_dev);
-
-	st->rpdev = rpdev;
-	st->dev = &rpdev->dev;
-	dev_set_drvdata(&rpdev->dev, indio_dev);
-
-	indio_dev->dev.parent = &rpdev->dev;
-	indio_dev->name = id->name;
-	indio_dev->info = &mpu6050_info;
-	indio_dev->setup_ops = &mpu6050_buffer_setup_ops;
-	indio_dev->modes = INDIO_DIRECT_MODE | INDIO_BUFFER_SOFTWARE;
-	indio_dev->channels = mpu6050_channels;
-	indio_dev->num_channels = ARRAY_SIZE(mpu6050_channels);
-	buffer = devm_iio_kfifo_allocate(&indio_dev->dev);
-    if (!buffer) {
-        return -ENOMEM;
-    }
-
-	ret = buffer->access->set_length(buffer, 8);
-    if(ret < 0) {
-        pr_err("Failed setting length of kfifo buffer\n");
-        return ret;
-    }
-    ret = buffer->access->set_bytes_per_datum(buffer, sizeof(PrbMessageType));
-	if(ret < 0) {
-        pr_err("Failed setting bytes_per_datum of kfifo buffer\n");
-        return ret;
-	}
-
-    ret = buffer->access->request_update(buffer);
-    if(ret < 0) {
-        pr_err("Failed update of kfifo buffer\n");
-        return ret;
-    }
-	iio_device_attach_buffer(indio_dev, buffer);
-
-	init_waitqueue_head(&st->wait_list);
-
-	ret = iio_device_register(indio_dev);
-	if (ret < 0) {
-		pr_err("Failed to register with iio\n");
-		return ret;
-	}
-
-	return 0;
-
-}
-
-/**
- * mpu6050_driver_remove() - function gets invoked when the rpmsg device is
+ * pru_imu_driver_remove() - function gets invoked when the rpmsg device is
  * removed
  */
-static void mpu6050_driver_remove(struct rpmsg_device *rpdev)
+static void pru_imu_driver_remove(struct rpmsg_device *rpdev)
 {
-	struct iio_dev *indio_dev;
+    struct pru_imu *cntr;
 
-    printk(KERN_INFO "mpu6050_driver_remove.\n");
-	indio_dev = dev_get_drvdata(&rpdev->dev);
-	iio_device_unregister(indio_dev);
-	iio_device_free(indio_dev);
+    printk(KERN_INFO "pru_imu_driver_remove.\n");
+    cntr = dev_get_drvdata(&rpdev->dev);
+    if(cntr != NULL) {
+        device_unregister(&cntr->chst.cntrdev);
+    }
+//    indio_dev = dev_get_drvdata(&rpdev->dev);
+//    iio_device_unregister(indio_dev);
+//    iio_device_free(indio_dev);
 }
 
-/* mpu6050_id - Structure that holds the channel name for which this driver
-   should be probed */
-static const struct rpmsg_device_id mpu6050_id[] = {
-		{ .name = "pru-mylinuxdrone" },
-        { .name = "pru-mpu6050" },
-		{ },
-};
-MODULE_DEVICE_TABLE(rpmsg, mpu6050_id);
+static int pru_imu_driver_cb(struct rpmsg_device *rpdev, void *data,
+                  int len, void *priv, u32 src)
+{
+    printk(KERN_INFO "pru_imu_driver_cb.\n");
+    return 0;
+}
+static int pru_imu_driver_probe (struct rpmsg_device *rpdev)
+{
+    int ret;
+    struct pru_imu *st;
 
-/* mpu6050_driver - The structure containing the pointers to read/write
-   functions to send data to the pru */
-static struct rpmsg_driver mpu6050_driver= {
-	.drv.name	= KBUILD_MODNAME,
-	.drv.owner	= THIS_MODULE,
-	.id_table	= mpu6050_id,
-	.probe		= mpu6050_driver_probe,
-	.callback	= mpu6050_driver_cb,
-	.remove		= mpu6050_driver_remove,
+    printk(KERN_INFO "pru_imu_driver_probe [%s].\n", rpdev->id.name);
+    // FIXME: verificare se device già creato.
+    printk(KERN_INFO "pru_imu_driver_probe creating device.\n");
+
+    st = kzalloc(sizeof(*st), GFP_KERNEL);
+    if (!st) {
+       return -ENOMEM;
+    }
+    printk(KERN_INFO "pru_imu_driver_probe allocated memory.\n");
+    st->chst.rpdev = rpdev;
+    st->chst.cntrdev.id = 1;
+    st->chst.cntrdev.release = pru_imu_release;
+    // TODO: il parent deve essere il pru_control device
+    st->chst.cntrdev.parent = pru_control_ptr;
+    st->chst.cntrdev.type = &pru_channel_type;
+    st->chst.cntrdev.devt = MKDEV(0, 0);
+    st->chst.cntrdev.groups = pru_imu_groups;
+    dev_set_name(&st->chst.cntrdev, "pru_imu");
+    printk(KERN_INFO "pru_imu_driver_probe pru_imu device prepared.\n");
+
+    dev_set_drvdata(&rpdev->dev, st);
+
+    // registra il nuovo device
+    printk(KERN_INFO "pru_imu_driver_probe registering pru_imu device... \n");
+    ret = device_register(&(st->chst.cntrdev));
+    if (ret) {
+       printk(KERN_INFO "pru_imu_driver_probe pru_imu device registration failed.\n");
+       kfree(st);
+       return ret;
+    }
+
+    // TODO: creare iio device
+
+    printk(KERN_INFO "pru_imu_driver_probe pru_imu device registered \n");
+
+    return 0;
+}
+
+/* pru_imu_id - Structure that holds the channel name for which this driver
+   should be probed */
+static const struct rpmsg_device_id pru_imu_id[] = {
+        { .name = "pru-imu" },
+        { },
 };
+MODULE_DEVICE_TABLE(rpmsg, pru_imu_id);
+
+/* pru_imu_driver - The structure containing the pointers to read/write
+   functions to send data to the pru */
+static struct rpmsg_driver pru_imu_driver= {
+    .drv.name   = "pru_imu_driver",
+    .drv.owner  = THIS_MODULE,
+    .id_table   = pru_imu_id,
+    .probe      = pru_imu_driver_probe,
+    .callback   = pru_imu_driver_cb,
+    .remove     = pru_imu_driver_remove,
+};
+/*************************************************************************************
+ * PRU IMU DRIVER END
+ *************************************************************************************/
+
+/*************************************************************************************
+ * PRU CONTROL DRIVER START
+ *************************************************************************************/
+struct pru_control {
+    struct pru_channel chst;
+};
+
+static struct class mylinuxdrone_class = {
+        .name = "mylinuxdrone",
+        .owner = THIS_MODULE,
+};
+
+static int enable_imu(struct pru_control *cntrl) {
+    unsigned char startMessage[sizeof(PrbMessageType)];
+    int ret;
+    printk(KERN_INFO "enable_imu\n");
+    ((PrbMessageType*)startMessage)->message_type = MPU_CREATE_CHANNEL_MSG_TYPE;
+
+    ret = rpmsg_send(cntrl->chst.rpdev->ept, (void *)startMessage, sizeof(PrbMessageType));
+    if (ret) {
+        dev_err(&cntrl->chst.cntrdev, "Failed sending start mpu message to PRUs\n");
+     }
+    printk(KERN_INFO "enable_imu: creation of pru_imu device requested.\n");
+
+    return 0;
+}
+static int disable_imu(struct pru_control *cntrl) {
+    unsigned char startMessage[sizeof(PrbMessageType)];
+    int ret;
+    printk(KERN_INFO "disable_imu\n");
+    ((PrbMessageType*)startMessage)->message_type = MPU_DESTROY_CHANNEL_MSG_TYPE;
+
+    ret = rpmsg_send(cntrl->chst.rpdev->ept, (void *)startMessage, sizeof(PrbMessageType));
+    if (ret) {
+        dev_err(&cntrl->chst.cntrdev, "Failed sending start mpu message to PRUs\n");
+     }
+    printk(KERN_WARNING "disable_imu: remove of pru_imu device requested.\n");
+
+    return 0;
+}
+static struct pru_control *dev_to_pru_control(struct device *dev)
+{
+        return container_of(dev, struct pru_control, chst.cntrdev);
+}
+static ssize_t imu_enable_store(struct device *dev,
+                            struct device_attribute *attr,
+                            const char *buf, size_t len)
+{
+        struct pru_control *ch = dev_to_pru_control(dev);
+        unsigned int enable;
+        int ret;
+
+        ret = kstrtouint(buf, 0, &enable);
+        if (ret < 0)
+                return ret;
+        if (enable > 1)
+                return -EINVAL;
+
+        if(enable == 1) {
+            ret = enable_imu(ch);
+        } else {
+            ret = disable_imu(ch);
+        }
+        return ret ? : len;
+}
+static DEVICE_ATTR_WO(imu_enable);
+
+static struct attribute *pru_control_attrs[] = {
+        &dev_attr_imu_enable.attr,
+        NULL,
+};
+ATTRIBUTE_GROUPS(pru_control);
+
+static void pru_control_release(struct device *dev)
+{
+    struct pru_control *pc = dev_to_pru_control(dev);
+    printk(KERN_INFO "pru_control_release.\n");
+    kfree(pc);
+}
 
 /**
- * mpu6050_driver_init() : driver driver registration
+ * pru_control_driver_cb() - function gets invoked each time the pru sends some
+ * data.
+ */
+static int pru_control_driver_cb(struct rpmsg_device *rpdev, void *data,
+				  int len, void *priv, u32 src)
+{
+    printk(KERN_INFO "pru_control_driver_cb [%s].\n", rpdev->id.name);
+	return 0;
+}
+
+/**
+ * pru_control_driver_probe() - function gets invoked when the rpmsg channel
+ * as mentioned in the pru_control_id table
+ */
+static int pru_control_driver_probe(struct rpmsg_device *rpdev)
+{
+	int ret;
+	struct pru_control *st;
+
+    printk(KERN_INFO "pru_control_driver_probe [%s].\n", rpdev->id.name);
+    // FIXME: verificare se device già creato.
+    printk(KERN_INFO "pru_control_driver_probe device created.\n");
+
+    st = kzalloc(sizeof(*st), GFP_KERNEL);
+    if (!st) {
+       return -ENOMEM;
+    }
+    printk(KERN_INFO "pru_control_driver_probe allocated memory.\n");
+    st->chst.rpdev = rpdev;
+    st->chst.cntrdev.id = 1;
+    st->chst.cntrdev.release = pru_control_release;
+    st->chst.cntrdev.parent = NULL;
+    st->chst.cntrdev.type = &pru_channel_type;
+    st->chst.cntrdev.devt = MKDEV(0, 0);
+    // FIXME: definire una classe?
+//    st->chst.cntrdev.class = &mylinuxdrone_class;
+    st->chst.cntrdev.groups = pru_control_groups;
+    dev_set_name(&st->chst.cntrdev, "mylinuxdrone");
+    printk(KERN_INFO "pru_control_driver_probe pru_control device prepared.\n");
+
+    dev_set_drvdata(&rpdev->dev, st);
+
+    // registra il nuovo device
+    printk(KERN_INFO "pru_control_driver_probe registering pru_control device... \n");
+    ret = device_register(&(st->chst.cntrdev));
+    if (ret) {
+       printk(KERN_INFO "pru_control_driver_probe pru_control device registration failed.\n");
+       kfree(st);
+       return ret;
+    }
+
+    pru_control_ptr = &st->chst.cntrdev;
+    printk(KERN_INFO "pru_control_driver_probe pru_control device registered \n");
+
+    return 0;
+
+    /*
+     * TODO
+     * * creare device pru_control_device con attributi per il controllo delle componenti
+     * - dividere i driver nei rispettivi file source .c; es. pru_imu_driver.c
+     * * il device pru_control_device deve avere il riferimento a rpdev e viceversa
+     * * quando viene settato un attributo di pru_control (es. imu-enable=1), lo 'store' deve invocare una funzione 'es. imu_enable(rpdev)'
+     * - quando viene invocato una probe(rpdev), dovrà essere invocata una funzione 'es. imu_enabled(imu_control_device)
+     * - serve quindi definire una struct di callback (prendere esempio da iio_info)
+     * * adeguare pru_control_state a quanto realmente serve (probabilmente diventa pru_control_device con quanto indicato sopra)
+     * * i drivers devono essere disaccoppiati ed autonomi
+     * * i drivers sono registrati tutti all'init del modulo e deregistrati tutti alla exit del modulo
+     * * il messaggio di create del channel rpmsg di un device è inviato da pru_control sul canale di controllo
+     * * il messaggio di destroy del channel rpmsg è inviato da pru_control sul canale di controllo
+     * * i devices sono creati e distrutti dal relativo driver (es. il device pru_imu_device da pru_imu_driver per effetto di pru_imu_probe o pru_imu_remove etc.)
+     * - capire meglio relazione tra 'module', 'driver', 'device'
+     *
+     */
+
+}
+
+/**
+ * pru_control_driver_remove() - function gets invoked when the rpmsg device is
+ * removed
+ */
+static void pru_control_driver_remove(struct rpmsg_device *rpdev)
+{
+	struct pru_control *cntr;
+    printk(KERN_INFO "pru_control_driver_remove.\n");
+	cntr = dev_get_drvdata(&rpdev->dev);
+	if(cntr != NULL) {
+	    device_unregister(&cntr->chst.cntrdev);
+	}
+    pru_control_ptr = NULL;
+}
+
+/* pru_control_id - Structure that holds the channel name for which this driver
+   should be probed
+ */
+static const struct rpmsg_device_id pru_control_id[] = {
+		{ .name = "pru-control" },
+		{ },
+};
+MODULE_DEVICE_TABLE(rpmsg, pru_control_id);
+
+/* pru_control_driver - The structure containing the pointers to read/write
+   functions to send data to the pru
+ */
+static struct rpmsg_driver pru_control_driver= {
+	.drv.name	= KBUILD_MODNAME,
+	.drv.owner	= THIS_MODULE,
+	.id_table	= pru_control_id,
+	.probe		= pru_control_driver_probe,
+	.callback	= pru_control_driver_cb,
+	.remove		= pru_control_driver_remove,
+};
+/*************************************************************************************
+ * PRU CONTROL DRIVER END
+ *************************************************************************************/
+
+/**
+ * mylinuxdrone_module_init() : driver driver registration
  *
  * The initialization function gets invoked when the driver is loaded. The
  * function registers itself on the virtio_rpmsg_bus and it gets invoked when
  * the pru creates a channel named as in the mpu6050_id structure.
  */
-static int __init mpu6050_driver_init(void)
+static int __init mylinuxdrone_module_init(void)
 {
 	int ret;
-    printk(KERN_INFO "mpu6050_driver_init.\n");
+    printk(KERN_INFO "mylinuxdrone_module_init.\n");
 
-	ret = register_rpmsg_driver(&mpu6050_driver);
-	if (ret){
-		pr_err("Failed to register mpu6050 driver on rpmsg_bus\n");
-		return ret;
-	}
+    ret = register_rpmsg_driver(&pru_imu_driver);
+    if (ret){
+        pr_err("Failed to register pru_imu driver on rpmsg_bus\n");
+        return ret;
+    }
+    printk(KERN_INFO "pru_imu_driver registered.\n");
 
-    printk(KERN_INFO "mpu6050_driver registered as rpmsg driver.\n");
+    ret = register_rpmsg_driver(&pru_control_driver);
+    if (ret){
+        pr_err("Failed to register pru_control driver on rpmsg_bus\n");
+        unregister_rpmsg_driver(&pru_imu_driver);
+        return ret;
+    }
+    printk(KERN_INFO "pru_control_driver registered.\n");
 
 	return 0;
 }
 
 /**
- * mpu6050_driver_exit() - function invoked when the driver is unloaded
+ * mylinuxdrone_module_exit() - function invoked when the driver is unloaded
  */
-static void __exit mpu6050_driver_exit(void)
+static void __exit mylinuxdrone_module_exit(void)
 {
-    printk(KERN_INFO "mpu6050_driver_exit.\n");
-	unregister_rpmsg_driver (&mpu6050_driver);
+    printk(KERN_INFO "mylinuxdrone_module_exit.\n");
+
+    unregister_rpmsg_driver (&pru_imu_driver);
+    printk(KERN_INFO "pru_imu_driver unregistered.\n");
+
+	unregister_rpmsg_driver (&pru_control_driver);
+    printk(KERN_INFO "pru_control_driver unregistered.\n");
 }
 
-module_init(mpu6050_driver_init);
-module_exit(mpu6050_driver_exit);
+module_init(mylinuxdrone_module_init);
+module_exit(mylinuxdrone_module_exit);
 
 MODULE_AUTHOR("Andrea Lambruschini <andrea.lambruschini@gmail.com>");
-MODULE_DESCRIPTION("mpu6050 linux Driver");
+MODULE_DESCRIPTION("mylinuxdrone linux Module");
 MODULE_LICENSE("GPL v2");
